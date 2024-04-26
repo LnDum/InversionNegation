@@ -4,5 +4,5 @@ In the Data folder, you’ll find all the data for each participant. There is a 
 
 The code is a .rmd with explanations of what we did at each step (and a pdf of the Rmarkdown).
 
-'A table with the participants’ information (age, sex, Benton and FrAct score…)
+'SujetsFaceMatch' is a table with the participants’ information (age, sex, Benton and FrAct score…)
 
