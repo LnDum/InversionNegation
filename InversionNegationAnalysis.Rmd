@@ -1,0 +1,2065 @@
+---
+title: "Inversion Contrast Negation Data - Analysis"
+output: pdf_document
+date: "2022-12-05"
+fig_width: 6 
+fig_height: 10 
+---
+```{r setup, , echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+## **Horizontal face information is the main gateway to the configuration and surface cues to familiar face identity. Comparative analysis of inversion and negation effects**
+
+## Abstract
+Humans preferentially rely on horizontal cues when recognizing face identity. The reasons for this preference are still largely elusive. Past research has proposed the existence of two main sources of face identity information: feature configuration and surface properties, the access to which is disrupted by picture-plane inversion and contrast negation, respectively.<br>
+
+Our objective was to characterize the configural versus surface nature of the face information conveyed by the horizontal range. To do this, we tracked the effects of inversion and negation in the orientation domain.<br>
+
+Participants performed an identity recognition task using orientation-filtered (from 0° to 150° in steps of 30°) pictures of familiar male actors presented upright, inverted, or negated. We modelled the inversion and negation effects across orientation with a Gaussian function using a Bayesian nonlinear mixed-effect modelling approach.<br>
+
+Despite the absence of a significant correlation between the effects of inversion and negation for full-spectrum images, they showed a strikingly similar orientation tuning profile. Indeed, both effects peaked in the horizontal range and displayed a comparable tuning strength. This confirms past evidence that the horizontal tuning of face identification is due to this range facilitating the access to feature configuration; our findings further suggest that it is also the main carrier of the surface cues to identity.<br>
+
+Our findings that the horizontal tuning is similarly disrupted by inversion and negation indicates that the horizontally oriented contrast in the face stimulus provides a privileged access to the important cues for identity recognition, namely the configuration of features and the surface properties.<br> 
+
+
+```{r packages, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+library(plyr) 
+library(readr) 
+library(readxl)
+library(writexl)
+library(stringr)
+library(ggplot2)
+library(ggpubr)
+library(lme4)
+library(geomtextpath)
+library(patchwork)
+library(DescTools)
+library(bayestestR)
+library(magrittr)
+library(tidyverse)
+library(dplyr)
+library(brms)
+library(tidybayes)
+library(reshape2)
+library(bayesplot)
+library(geomtextpath)
+library(BayesFactor)
+library(patchwork)
+library(ggthemes)
+library(haven) #for reading sav data
+library(sjstats) #for calculating intra-class correlation (ICC)
+library(ROCR) #for calculating area under the curve (AUC) statistics
+library(modelr) #for data manipulation
+library(raincloudplots)
+library(ppcor)
+
+```
+
+
+
+
+
+```{r settings and data, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+# ggplot theme 
+lntheme <- theme_classic() +
+  theme(panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        strip.background = element_rect(fill = 'white', color = "white"), 
+        strip.placement = 'outside',
+        plot.title = element_text(hjust = 0.5),
+        text = element_text(size = 17)) 
+
+
+palette <- c("#56B4E9", "#E69F00","#4d4d4d") # this one is colorvblind friendly
+
+path = "C:/Thèse/ProjetInversionNegation/FaceMatchData"
+
+#retreiving the datafiles
+files <- list.files(path = file.path(path, "/RawData"), pattern = ".csv", full.names = TRUE) #makes a list of all the files
+files <- lapply(files, read_csv) #makes a list of tibbles
+allData <-  files %>% rbind.fill #makes a big table
+
+###########Cleaning the big table
+names(allData) <- c("Sujet", "Trial", "Condition", "Filter", "Imname", "Actor0",
+                    "Actor1", "Actor2", "Actor3", "Actor4","Actor5", "Actor6", 
+                    "Actor7", "Actor8", "Actor9", "Answer", "Accu", "RT",
+                    "Score" ,"Scoreperc", "error") # change the names of the columns
+DataTot <- allData %>%
+  filter( !(Trial == "_" | Trial == "train")) %>%   #getting rid of training
+  dplyr::select(Condition | Filter | Answer | Accu | RT |Sujet)  #selecting the right columns
+
+####duplicating 0 to have 0 and 180 to have a gaussian shape
+dupldat <- DataTot %>%
+  filter(Filter == 0)    #takes only the data with filter at 0
+dupldat$Filter <- 180    #makes the value of 0 at 180
+DataTot <- rbind(DataTot, dupldat)   #put everything in the same table
+```
+
+
+
+## Minimum number of trial per condition 
+We set the minimum number of trials per condition to 60 (some participants did not finish all the sessions)
+
+```{r number of trials, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+CutO = 60
+
+nsuj <- length(categories <- unique(DataTot$Sujet)) 
+print(paste("Number of subjects before cut-off:" , nsuj))
+
+NumbObs <- DataTot %>%
+  dplyr::group_by(Sujet, Condition, Filter) %>%
+  dplyr::count() %>%
+  dplyr::filter(!n<CutO)
+
+nsuj30 <- length(categories <- unique(NumbObs$Sujet)) 
+
+print(paste("Number of subjects with at least 60 trials per condition:" , nsuj30))
+
+listsuj <- NumbObs$Sujet
+DataTot <- DataTot %>%  mutate(yes = ifelse(Sujet %in% listsuj, 1, 0)) %>%
+  filter(yes == 1)
+fnsuj <- length(categories <- unique(DataTot$Sujet)) 
+```
+
+
+## Floor effect / Chance level check up
+Checking that the results are not at floor level.<br>
+Checking that the results for each condition are above chance level<br>
+Here we set the cutoff is at >0.5 for each condition (performances are always higher than chance level).
+
+```{r floor effect, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+FlEff = 0.5
+
+MeanSuj <- DataTot %>%
+  dplyr::select(Sujet, Accu, Condition, Filter)%>%
+  dplyr::group_by(Condition, Filter, Sujet)%>%
+  dplyr::summarise(meanpersuj = mean(Accu)) #calculate the accuracy for each subject
+
+MeanSuj <- MeanSuj %>% filter(!Filter == 'fs')
+
+TakeOut <- MeanSuj %>%
+  filter(meanpersuj<FlEff)
+
+listsuj <- TakeOut$Sujet
+DataTot <- DataTot %>%  mutate(yes = ifelse(Sujet %in% listsuj, 0, 1)) %>%
+  filter(yes == 1)
+fnsuj <- length(categories <- unique(DataTot$Sujet)) 
+print(paste("Number of subjects after selection (above chance level):" , fnsuj))
+
+#write all these info in a table
+nmrsujTOT <- fnsuj
+SujTot <- as.data.frame(nmrsujTOT)
+NbTrials <- as.data.frame(CutO)
+FlEffect <- as.data.frame(FlEff)
+Info <- cbind(SujTot, NbTrials, FlEffect)
+write_xlsx(Info, file.path(path,"Infos.xlsx"))
+
+
+```
+
+
+
+
+## Response time
+We use the response time to get rid if outlier responses.<br>
+The response times are log10 transformed, the mean RT and sd is calculated for each participant<br>
+For each participants RT over or under the mean response time (mean+/- 2.5*sd) are considered outliers and taken out of the data.
+
+```{r response time, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+DataTot$LogRT <- log10(DataTot$RT)
+MeanRT <- DataTot %>%
+  dplyr::group_by(Sujet)%>%
+  dplyr::summarise(meanRTSuj = mean(LogRT),
+            sdRTSuj = sd(LogRT))
+
+MeanRT$Xtrlow <- MeanRT$meanRTSuj - (2.5 * MeanRT$sdRTSuj)
+MeanRT$Xtrhigh <- MeanRT$meanRTSuj + (2.5 * MeanRT$sdRTSuj)
+
+TotRT <- left_join(DataTot, MeanRT) %>%
+  dplyr::filter(Xtrlow<LogRT & LogRT<Xtrhigh)
+
+tot = nrow(DataTot)
+del = tot - nrow(TotRT)
+perc = 100 * del / tot
+
+print(paste("This results in a total deletion of :", round(perc,2), "% of the data"))
+
+DataTot <- TotRT
+
+```
+
+
+## Accuracy
+Accuracy for each participant in each condition and filter
+
+```{r accuracy, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+MeanSuj <- DataTot %>%
+  dplyr::select(Sujet, Accu, Condition, Filter)%>%
+  dplyr::group_by(Condition, Filter, Sujet)%>%
+  dplyr::summarise(meanpersuj = mean(Accu)) #calculate the accuracy for each subject
+
+MeanSuj <- MeanSuj %>% filter(!Filter == 'fs')
+MeanSuj$Filter <- as.factor(MeanSuj$Filter)
+
+#formule interval de confiance à 95%
+lower_ci <- function(mean, se, n, conf_level = 0.95){
+  lower_ci <- mean - qt(1 - ((1 - conf_level) / 2), n - 1) * se
+} #defin function for 95 confidence interval (low)
+upper_ci <- function(mean, se, n, conf_level = 0.95){
+  upper_ci <- mean + qt(1 - ((1 - conf_level) / 2), n - 1) * se
+}
+
+
+MeanTot <- MeanSuj %>%
+  dplyr::group_by(Condition, Filter) %>%
+  dplyr::summarise(meanpercond = mean(meanpersuj),
+            sd = sd(meanpersuj),
+            count = n()) %>%
+  mutate(se = sd / sqrt(count),
+         low_ci = lower_ci(meanpercond, se, count),
+         upp_ci = upper_ci(meanpercond, se, count)) #accuracy moyenne pour chaque participant avec les 95 CI
+
+
+PlotModel <- MeanSuj %>%
+  mutate(Filter = fct_relevel(Filter, 
+            "0", "30", "60", 
+            "90", "120", "150", 
+            "180")) %>%
+  ggplot(aes(x = Filter, y = meanpersuj, color = Condition)) +
+  geom_boxplot() +
+  geom_point(fill= NA , size = 0.4 , position='jitter')+
+  facet_grid(. ~ Condition) +
+  #stat_summary(fun.y="mean")+
+  #stat_summary(geom="boxplot") +
+  geom_line(
+    data = MeanTot,
+    aes(x = Filter, y = meanpercond, color = Condition, group = Condition),
+    inherit.aes = FALSE,
+    size = 1,
+    show.legend = FALSE
+  ) +
+  geom_ribbon(
+    data = MeanTot,
+    aes(
+      x = Filter,
+      ymin = low_ci,
+      ymax = upp_ci,group = Condition,
+      fill = Condition), 
+    inherit.aes = FALSE,
+    alpha = 0.1) +
+   labs(x = "Orientation filter (degree)", y = "Accuracy") +
+  ggtitle("Mean accuracy") +
+  lntheme +
+  theme(axis.text.x = element_text(size = 7.5)) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(axis.ticks.x = element_blank())
+print(PlotModel)
+
+
+PlotModelSuperposed <- MeanSuj %>%
+  mutate(Filter = fct_relevel(Filter, 
+            "0", "30", "60", 
+            "90", "120", "150", 
+            "180")) %>%
+  ggplot(aes(x = Filter, y = meanpersuj, color = Condition)) +
+  geom_boxplot() +
+  geom_point(fill= NA , size = 0.4 , position='jitter')+
+  geom_line(
+    data = MeanTot,
+    aes(x = Filter, y = meanpercond, color = Condition, group = Condition),
+    inherit.aes = FALSE,
+    size = 1,
+    show.legend = FALSE
+  ) +
+  geom_ribbon(
+    data = MeanTot,
+    aes(
+      x = Filter,
+      ymin = low_ci,
+      ymax = upp_ci,group = Condition,
+      fill = Condition), 
+    inherit.aes = FALSE,
+    alpha = 0.1) +
+   labs(x = "Orientation filter (degree)", y = "Accuracy") +
+  ggtitle("Mean accuracy") +
+  lntheme +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(axis.ticks.x = element_blank())
+print(PlotModelSuperposed)
+
+
+
+AccUp <- MeanTot %>%
+  dplyr::filter(Condition == 'pos')%>%
+  dplyr::summarise(mean = mean(meanpercond))
+```
+
+
+## Calculation of the sensitivity (d')
+The correction from Hautus 1995 of addding 0.5 to the count of Hits, False Alarm, Correct Rejection and Miss is applied here
+The formula of the d' is the following :
+dprime = qnorm(Hit_Rate) - qnorm(FA_Rate)
+
+```{r sensitivity, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+# Sensitivity ----------------------------------------------
+
+DataTot <- DataTot %>%
+  mutate(Hit = ifelse((Answer == "same" & Accu == 1), 1, 0),      #subject responded same and was right --> hit
+         FalseA = ifelse((Answer == "same" & Accu == 0), 1, 0),   #subj responded same and was wrong --> false alarm
+         CorR = ifelse((Answer == "diff" & Accu == 1), 1, 0),     #subj responded diff and was right --> CR
+         Miss = ifelse((Answer == "diff" & Accu == 0), 1, 0))     #subj responded diff and was wrong --> miss
+
+
+H_FA <- DataTot %>% #Pos condition For every subject and every filter, the hit rate and the fa rate
+  dplyr::filter(!Filter== 'fs')%>%
+  dplyr::group_by(Sujet, Condition, Filter) %>%
+  dplyr::summarise( H = sum(Hit) + 0.5,
+                    FA = sum(FalseA) + 0.5,
+                    CR = sum(CorR) + 0.5,
+                    M = sum(Miss) + 0.5) %>%
+  ungroup() #calculate hits, false alarmas with the correction
+
+
+H_FA$HR <- H_FA$H / (H_FA$H + H_FA$M)
+H_FA$FAR <- H_FA$FA / (H_FA$FA + H_FA$CR)
+H_FA$dprime <- qnorm(H_FA$HR) - qnorm(H_FA$FAR) #calculate dprime
+
+
+write_xlsx(H_FA, file.path(path,"AllDPrimes.xlsx"))
+
+
+All.summary <- H_FA %>%
+  dplyr::group_by(Condition,Filter) %>%
+  dplyr::summarise( sd = sd(dprime),
+             meandp = mean(dprime)) #putin all the dprime of all participants together for each condition
+
+
+```
+
+
+
+
+```{r Normalisation, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+Ztr <- H_FA %>%
+ dplyr::select(Sujet, Condition, Filter, dprime)%>%
+  filter(!Filter == 'fs')
+
+Ztrsum <- Ztr %>%
+  dplyr::summarise(mean = mean(dprime),
+                   sd = sd(dprime))
+
+Ztr$Zscore <- (Ztr$dprime - Ztrsum$mean)/ Ztrsum$sd #calculate the zscore to normalize it
+
+```
+
+## Normalized sensitivity
+
+To normalize the sensitivity (d') I used the z tranform following this formula
+Ztranformed value = (d' - Mean(d')) / sd(d')
+The mean and sd dprime is calculated for each of the 3 conditions 
+```{r Normalized dprimes, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+FigNormD <- Ztr %>%
+  mutate(Filter = as.numeric(Filter)) %>%
+  ggplot(aes(x = Filter, y = Zscore, group = Condition, fill = Condition, color = Condition, label=Condition)) +
+  stat_summary(fun.data = "mean_cl_normal") +
+  geom_textline(stat = "summary", fun.y = "mean", size = 6.3, vjust = 0.2, hjust = 0.98, alpha = 0.8,linewidth = 1.8, linetype = 1) +
+  ggtitle("Normalized sensitivity at each filter") +
+  labs(x = "Orientation filter (degree)", y = "Normalized sensitivity") +
+  scale_x_continuous(breaks=seq(0, 300, 30)) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  lntheme+
+  theme(legend.position = "none")
+print(FigNormD)
+
+name <- paste("NormDp.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+FigNormD
+dev.off()
+
+```
+
+
+\newpage
+
+## Comparison of the performance depending on the presentation condition - General Linear Mixed Model
+
+To compare the recognition performances between the 3 presentation condition, we model our data (the *normd'*) using a GLMM.
+
+```{r GLM Bayes, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+fit <- brm(
+  formula = Zscore ~ Condition + (Condition | Sujet),
+  data = Ztr,
+ # prior = (prior(normal(35, 20), class = "b", nlpar = "Zscore", coef = "Intercept"), #40,20
+ # prior(normal(0, 30), nlpar = "StDev", class = "b"), #0,20/ 0,30
+#  prior(exponential(0.1), nlpar = "StDev", class = "sd")),
+  family = student,
+  warmup = 2000,
+  iter = 6000,
+  cores = parallel::detectCores(),
+  chains = 4, 
+  control = list(adapt_delta = 0.9),
+  file = "glm9.rds",
+  seed = 986,
+  sample_prior = "yes"
+)
+
+
+a <- stanplot(fit, 
+         type = "trace")
+b <- stanplot(fit, 
+         type = "acf_bar")
+summary(fit)
+c <- stanplot(fit, 
+         exclude=c('sigma', 'nu'),
+         type = "areas",
+         prob = 0.95)
+
+Ztr %>% 
+  # data_grid(Condition) %>%
+  add_fitted_draws(fit) %>%
+  ggplot(aes(x = .value, y = Condition)) +#interaction(SEX, PPED))) +
+  stat_pointintervalh(.width = c(.68, .95)) +
+  coord_flip() +
+  xlab("predicted probability") 
+  #scale_x_continuous(breaks = seq(0, 0.24, 0.02))
+
+modelCond <- readRDS("glm9.rds")
+#posterior_summary(model)
+print("The highest Rhat values -- Should be under 1.01")
+print(tail(sort(rstan::summary(modelCond$fit)$summary[,"Rhat"]))) #here biggest rhat
+print("The smallest Effective Sample Size -- should be over 100 * the number of chains")
+print(head(sort(rstan::summary(modelCond$fit)$summary[,"n_eff"]))) # the smallest ESS
+
+
+
+summary(modelCond)
+pred_fit <- predict(fit, 
+                       summary = FALSE, 
+                       negative_rt = TRUE, 
+                       ndraws = 500)
+
+dfpred <- crossing(
+  Condition = c('inv', 'neg', 'pos')
+)
+
+
+predicted_data <- add_epred_draws(modelCond, newdata = dfpred, re_formula = NA, scale = "response")
+
+predicted_dataINV <- predicted_data %>%
+  filter(Condition == 'inv')
+ci_hdiINV <- ci(ci= 0.89, predicted_dataINV, method = "HDI")
+
+predicted_dataNEG <- predicted_data %>%
+  filter(Condition == 'neg')
+ci_hdiNEG <- ci(ci= 0.89, predicted_dataNEG, method = "HDI")
+
+predicted_dataPOS <- predicted_data %>%
+  filter(Condition == 'pos')
+ci_hdiPOS <- ci(ci= 0.89, predicted_dataPOS, method = "HDI")
+
+
+predicted_data <- predicted_data %>% 
+  mean_qi()
+
+predicted_data$Condition <- as.factor(predicted_data$Condition)
+
+
+PlotModel <- Ztr %>%
+  ggplot(aes(x = Condition, y = Zscore, color = Condition, fill = Condition)) +
+  stat_summary(fun = "mean", geom = "point", shape = 25) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+ # ylim(-1,1.5)+
+  #stat_summary(fun.data = "mean_cl_normal", shape = 25) +
+  geom_point(data = predicted_data,
+    aes(
+      x = Condition,
+      y = .epred),
+    shape = 0,
+    size = 4) +#,
+      #fill = Condition)) +
+  geom_abline(intercept = c(ci_hdiINV$CI_low[5], ci_hdiINV$CI_high[5]), slope = 0, linetype= 4, size = 1, color = palette[1]) +
+  geom_abline(intercept = c(ci_hdiNEG$CI_low[5], ci_hdiNEG$CI_high[5]), slope = 0, linetype= 4, size = 1, color = palette[2]) +
+  geom_abline(intercept = c(ci_hdiPOS$CI_low[5], ci_hdiPOS$CI_high[5]), slope = 0, linetype= 4, size = 1, color = palette[3]) +
+  labs(x = "Conditions", y = "Performance (normd')") + 
+  ggtitle("Mean and CrI predictions for each condition") +
+  lntheme +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(legend.position = "none")+
+  coord_cartesian(ylim = c(-1, 1.5))+
+  theme(axis.ticks.x = element_blank())
+print(PlotModel)
+
+
+name <- paste("GLModel.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PlotModel
+dev.off()
+
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(modelCond, resp = "Zscore", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("normd'") +
+  ylab("Density")
+#print(checkModel)
+
+
+```
+
+\newpage
+## Individual recognition performance of orientation-filtered images
+
+The *normd'* for every subject 
+
+```{r individual d, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 10, fig.width = 8}
+
+FigIndivd <- Ztr %>%
+  filter(!Filter == 'fs') %>%
+  mutate(Filter = as.numeric(Filter)) %>%
+  ggplot(aes(x = Filter, y = dprime, group = Condition, fill = Condition, color = Condition)) +
+  stat_summary(fun = "mean", geom = "line", alpha = 0.5, size = 1) +
+  stat_summary(fun = "mean", geom = "point", alpha = 0.5, size = 1.3) +
+  facet_wrap(~ Sujet , scales = "free_y", ncol = 5) +
+  ggtitle("Individual sensitivity (d')") +
+  labs(x = "Orientation filter (degree)", y = "Sensitivity (dprime)") +
+  scale_x_continuous(breaks=seq(0, 180, 30)) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  guides(linetype = FALSE) +
+  geom_point(size = 1.5) +
+  ylim(0, 5) +
+  lntheme +
+  theme(axis.text.x = element_text(size = 6)) 
+
+print(FigIndivd)
+
+name <- paste("FigIndivd.tif")
+tiff(name, width = 11000, height = 8000, units = 'px', res = 600)
+FigIndivd
+dev.off()
+
+```
+
+## Population-level recognition performance of orientation-filtered images
+
+\newpage
+```{r flat violin, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+
+"%||%" <- function(a, b) {
+  if (!is.null(a)) a else b
+}
+
+geom_flat_violin <- function(mapping = NULL, data = NULL, stat = "ydensity",
+                        position = "dodge", trim = TRUE, scale = "area",
+                        show.legend = NA, inherit.aes = TRUE, ...) {
+  layer(
+    data = data,
+    mapping = mapping,
+    stat = stat,
+    geom = GeomFlatViolin,
+    position = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params = list(
+      trim = trim,
+      scale = scale,
+      ...
+    )
+  )
+}
+
+#' @rdname ggplot2-ggproto
+#' @format NULL
+#' @usage NULL
+#' @export
+GeomFlatViolin <-
+  ggproto("GeomFlatViolin", Geom,
+          setup_data = function(data, params) {
+            data$width <- data$width %||%
+              params$width %||% (resolution(data$x, FALSE) * 0.9)
+            
+            # ymin, ymax, xmin, and xmax define the bounding rectangle for each group
+            data %>%
+              group_by(group) %>%
+              mutate(ymin = min(y),
+                     ymax = max(y),
+                     xmin = x,
+                     xmax = x + width / 2)
+            
+          },
+          
+          draw_group = function(data, panel_scales, coord) {
+            # Find the points for the line to go all the way around
+            data <- transform(data, xminv = x,
+                              xmaxv = x + violinwidth * (xmax - x))
+            
+            # Make sure it's sorted properly to draw the outline
+            newdata <- rbind(plyr::arrange(transform(data, x = xminv), y),
+                             plyr::arrange(transform(data, x = xmaxv), -y))
+            
+            # Close the polygon: set first and last point the same
+            # Needed for coord_polar and such
+            newdata <- rbind(newdata, newdata[1,])
+            
+            ggplot2:::ggname("geom_flat_violin", GeomPolygon$draw_panel(newdata, panel_scales, coord))
+          },
+          
+          draw_key = draw_key_polygon,
+          
+          default_aes = aes(weight = 1, colour = "grey20", fill = "white", size = 0.5,
+                            alpha = NA, linetype = "solid"),
+          
+          required_aes = c("x", "y")
+)
+
+```
+
+```{r raincloud, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+
+sumZtr <- Ztr %>%
+  group_by(Condition, Filter) %>%
+  summarise(MeanScore = mean(Zscore),
+            Sdscore = sd(Zscore))
+
+
+ZscoreRainCloud <-Ztr %>%
+   mutate(Filter = as.character(Filter),
+          Filter = fct_relevel(Filter, 
+            "0", "30", "60", 
+            "90", "120", "150", 
+            "180")) %>%
+  ggplot(aes(x = Filter, y = Zscore, fill = Condition)) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  geom_flat_violin(aes(colour=Condition, fill = Condition),
+                   position = position_nudge(x = .13, y = 0), 
+                   adjust = 1.5, trim = FALSE, alpha = .5)+
+  geom_boxplot(aes(x = Filter, y = Zscore, colour = Condition), 
+               position = position_nudge(x = .13, y = 0),
+               outlier.shape = NA, alpha = .5, width = .1,
+               colour = "black")+
+  geom_point(aes(x = Filter, y = Zscore, colour = Condition, fill = Condition),
+             position = position_jitter(width = .05), 
+             size = 3.7, shape = 20)+
+  geom_line(data = sumZtr, 
+            aes(x = Filter, y = MeanScore, group = Condition, 
+                colour = Condition, fill = Condition), 
+            position = position_nudge(x = .13, y = 0), 
+            linetype = 5, size = 1)+
+  geom_point(data = sumZtr, aes(x = Filter, y = MeanScore, group = Condition), 
+             position = position_nudge(x = .13, y = 0), 
+             shape = 18, size = 6) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  lntheme +
+  ggtitle("Performance (nomrd') for each condition")
+
+ZscoreRainCloud
+
+# name <- paste("RainCloudZscore.tif")
+# tiff(name, width = 11000, height = 8000, units = 'px', res = 600)
+# ZscoreRainCloud
+# dev.off()
+
+
+
+
+
+
+SeparRainCloud <-Ztr %>%
+   mutate(Filter = as.character(Filter),
+          Filter = fct_relevel(Filter, 
+            "0", "30", "60", 
+            "90", "120", "150", 
+            "180")) %>%
+  ggplot(aes(x = Filter, y = Zscore, fill = Condition)) +
+  facet_grid(~factor(Condition, levels=c('pos','neg','inv'))) + #(. ~ Condition) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  geom_flat_violin(aes(colour=Condition, fill = Condition),
+                   position = position_nudge(x = .13, y = 0), 
+                   adjust = 1.5, trim = FALSE, alpha = .5)+
+  geom_boxplot(aes(x = Filter, y = Zscore, colour = Condition), 
+               position = position_nudge(x = .13, y = 0),
+               outlier.shape = NA, alpha = .5, width = .1,
+               colour = "black")+
+  geom_point(aes(x = Filter, y = Zscore, colour = Condition, fill = Condition),
+             position = position_jitter(width = .05), 
+             size = 3.7, shape = 20)+
+  geom_line(data = sumZtr, 
+            aes(x = Filter, y = MeanScore, group = Condition, 
+                colour = Condition, fill = Condition), 
+            position = position_nudge(x = .13, y = 0), 
+            linetype = 5, size = 1)+
+  geom_point(data = sumZtr, aes(x = Filter, y = MeanScore, group = Condition), 
+             position = position_nudge(x = .13, y = 0), 
+             shape = 18, size = 6) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  lntheme +
+  theme(axis.text.x = element_text(size = 7.5)) +
+  ggtitle("Performance (normd') for each condition")
+
+SeparRainCloud
+
+# name <- paste("SeparRainCloud.tif")
+# tiff(name, width = 11000, height = 8000, units = 'px', res = 600)
+# SeparRainCloud
+# dev.off()
+
+
+```
+
+
+\newpage
+
+## Effect of inversion and contrast negation
+To calculate the effect and have it for each subject we decided to use differences : 
+Effect of inversion = Up/Pos(*normd'*) - inv(*normd'*')
+Effect of contrast negation = Up/Pos(*normd'*) - neg(*normd'*)
+
+
+```{r Normalized difference, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+Diff <- Ztr %>%
+  dplyr::select(Sujet, Condition, Filter, Zscore) %>%
+  pivot_wider(names_from=Condition, values_from=c(Zscore))
+
+Diff$posinv <- Diff$pos - Diff$inv #calculate difference 
+Diff$posneg <- Diff$pos - Diff$neg
+
+Diff <- Diff %>% 
+  dplyr::select(Sujet, Filter, posinv, posneg) %>%
+  rename(inv = posinv,
+         neg = posneg) %>%
+  pivot_longer(!c(Sujet,Filter), names_to = "Condition", values_to = "diff")
+
+write_xlsx(Diff, file.path(path, "/ZDiff.xlsx"))
+
+FigNDiff <- Diff %>%
+  filter(!Filter == 'fs') %>%
+  mutate(Filter = as.numeric(Filter)) %>%
+  ggplot(aes(x = Filter, y = diff, group = Condition, fill = Condition, color = Condition, label = Condition)) +
+  stat_summary(fun.data = "mean_cl_normal") +
+  ggtitle("Effects of inversion and contrast negation") +
+  labs(x = "Orientation filter (degree)", y = "Effect \n (normd' difference)") +
+  scale_x_continuous(breaks=seq(0, 300, 30)) +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  geom_textline(stat = "summary", fun.y = "mean", size = 6.3, vjust = 0.2, hjust = 0.98, alpha = 0.8,linewidth = 1.8, linetype = 1) +
+  lntheme+
+  theme(legend.position = "none")
+print(FigNDiff)
+
+name <- paste("NormDifff.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+FigNDiff
+dev.off()
+
+```
+
+
+\newpage
+
+## Effect of inversion and negation for each subject 
+The effects of inversion and contrast negation (calculated with the difference between the upright/positive condition and each of the two other conditions) is shown for each subject
+
+```{r Effect for each subj, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.height = 10, fig.width = 8}
+FigEffectSuj <- Diff %>%
+  mutate(Filter = as.numeric(Filter)) %>%
+  ggplot(aes(x = Filter, y = diff, group = Condition, fill = Condition, color = Condition)) +
+  stat_summary(fun = "mean", geom = "line", alpha = 0.5, size = 1, position=position_dodge(width=5)) +
+  stat_summary(fun = "mean", geom = "point", alpha = 0.5, size = 2, position=position_dodge(width=5)) +
+  facet_wrap(~ Sujet , scales = "free_y", ncol = 5) +
+  scale_x_continuous(breaks=seq(0, 180, 30)) +
+  ggtitle("Effect of inversion and contrast negation \n for each subject") +
+  labs(x = "Orientation filter (degree)", y = "Effect \n (normd' difference)") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  guides(linetype = FALSE) +
+  geom_point(size = 1.5, position=position_dodge(width=5)) +
+  ylim(-2, 2)+
+  lntheme +
+  theme(axis.text.x = element_text(size = 6))
+
+print(FigEffectSuj)
+
+```
+\newpage
+
+
+## Comparison of the effects of inversion and negation - Bayesian modeling
+Seeing the effects of inversion and negation for each orientation filter, the data is shaped like a Gaussian. To compare precisely the effects of inversion and negation in terms on the recognition performance in term of the orientation-filter at which the effect is strongest, the selectivity of the effect over the orientation and the strength of the effect, we decided to model our data with a Gaussian Bayesian (non-linear) mixed model.
+
+```{r Model Setup, echo= TRUE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+Diff <- Diff %>%
+  rename(Subjects = Sujet,
+         Orifilter = Filter,
+         Effect = diff) %>%
+  mutate(Orifilter = as.numeric(Orifilter))
+
+
+
+formula <- brmsformula(
+  
+#gaussian model y ~ (1/(StDev * sqrt(2*pi))) * exp(- (x - mu)^2 / (2 * StDev ^2))
+# with y : the difference and x: the orientation filter, mu:the mean centered on the peaklocation
+  Effect ~ BaseAmpl + PeakAmpl * exp(-(Orifilter - PeakLoc)^2 / (2 * StDev^2)),
+  
+  #All 4 parameters : BaseAmpl , PeakAmpl, PeakLoc, StDev
+  #VD ~ 1 + effet(s) fixe(s) + (XX | XX)
+  # Peak location parameter (PeakLoc)
+  PeakLoc ~  Condition + ( Condition | Subjects ), 
+  
+  # Standard Deviation parameter (StDev)
+  StDev ~  Condition + ( Condition | Subjects),
+  
+  # Base amplitude parameter (baseAmpl)
+  BaseAmpl ~  Condition + ( Condition | Subjects),
+  
+  # Peak amplitude parameter (peakAmpl)
+  PeakAmpl ~  Condition + ( Condition | Subjects),
+  
+  # non-linear model = TRUE
+  nl = TRUE
+)
+
+
+
+
+# Priors
+ priors <- c(
+  # peak location:
+  prior(normal(90, 20), class = "b", nlpar = "PeakLoc", coef = "Intercept"), #90,40
+  #for the intercept we can set an informative prior / or set it on the center 
+  # 0-180 the middle is 90
+  prior(normal(0, 20), nlpar = "PeakLoc", class = "b"),
+  # even if we expect a difference we set the difference to 0 +/- 5
+  #to not influence the model
+  prior(exponential(0.1), nlpar = "PeakLoc", class = "sd"), 
+  #we chose exp because it is always positive
+  
+  # StDev:
+  prior(normal(35, 20), class = "b", nlpar = "StDev", coef = "Intercept"), #40,20
+  prior(normal(0, 30), nlpar = "StDev", class = "b"), #0,20/ 0,30
+  prior(exponential(0.1), nlpar = "StDev", class = "sd"),
+  
+  
+  # base amplitude:
+  prior(normal(1.5 , 1), class = "b", nlpar = "BaseAmpl", coef = "Intercept"), # -0.5, 1
+  prior(normal(0, 1.5), nlpar = "BaseAmpl", class = "b"), #0, 1
+  prior(exponential(0.05), nlpar = "BaseAmpl", class = "sd"),
+
+  
+  # peak amplitude:
+  prior(normal(1.5, 1), class = "b", nlpar = "PeakAmpl", coef = "Intercept"), #1,2
+  prior(normal(0, 1.5), nlpar = "PeakAmpl", class = "b"), #0,1/#0,2
+  prior(exponential(0.1), nlpar = "PeakAmpl", class = "sd"),
+  
+  # sigma parameter of the Gaussian model 
+  # (accounts for the variability of the residuals)
+  prior(exponential(0.1), class = "sigma") 
+)
+
+
+
+# Fitting
+
+fit <- brm(
+  formula = formula,
+  data = Diff,
+  family = gaussian("identity"),
+  prior = priors,
+  warmup = 3000, #1000
+  iter = 6000, #4000
+  cores = parallel::detectCores(),
+  chains = 4, #2
+  control = list(adapt_delta = 0.9),
+  file = "FinMod70.rds",
+  seed = 986,
+  sample_prior = "yes"  #permet de REGARDER
+)
+
+```
+
+## First Overview of the model
+
+
+```{r Model Summary, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+model <- readRDS("FinMod70.rds")
+#posterior_summary(model)
+
+pred_fit <- predict(fit, 
+                       summary = FALSE, 
+                       negative_rt = TRUE, 
+                       ndraws = 500)
+
+dfpred <- crossing(
+  Orifilter = seq(from = 0, to = 180, length.out = 1e2),
+  Condition = c('inv', 'neg')
+)
+
+
+predicted_data <- add_epred_draws(model, newdata = dfpred, re_formula = NA, scale = "response")
+
+predicted_dataINV <- predicted_data %>%
+  filter(Condition == 'inv')
+gausci_hdiINV <- ci(predicted_dataINV, method = "HDI")
+
+predicted_dataNEG <- predicted_data %>%
+  filter(Condition == 'neg')
+gausci_hdiNEG <- ci(predicted_dataNEG, method = "HDI")
+
+
+predicted_data <- predicted_data %>% 
+  mean_qi(.width = .89)
+
+predicted_data$Condition <- as.factor(predicted_data$Condition)
+
+
+PlotModel <- Diff %>%
+  mutate(Orifilter = as.numeric(Orifilter)) %>%
+  ggplot(aes(x = Orifilter, y = Effect, color = Condition, fill = Condition)) +
+  facet_grid(. ~ Condition) +
+  stat_summary(fun.data = "mean_cl_normal") + 
+  scale_x_continuous(breaks=seq(0, 180, 30)) +
+  geom_textline(
+    data = predicted_data,
+    aes(x = Orifilter, y = .epred, label = Condition),
+    inherit.aes = FALSE,
+    size = 5.2, vjust = 0.2, hjust = 0.97,
+    size = 1,
+    colour = "grey20",
+    show.legend = FALSE
+  ) +
+  geom_ribbon(
+    data = predicted_data,
+    aes(
+      x = Orifilter,
+      ymin = .lower,
+      ymax = .upper,
+      fill = Condition),
+    inherit.aes = FALSE,
+    alpha = 0.1) +
+  labs(x = "Orientation filter (degree)", y = "Effect \n (normd' difference)") + 
+  ggtitle("Effects (dots) \n model predictions (line and colored ribbons)") +
+  lntheme +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(legend.position = "none")+
+  theme(axis.ticks.x = element_blank())
+print(PlotModel)
+
+name <- paste("PlotModel.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PlotModel
+dev.off()
+
+
+
+
+
+SuperposedPlotModel <- Diff %>%
+  mutate(Orifilter = as.numeric(Orifilter)) %>%
+  ggplot(aes(x = Orifilter, y = Effect, color = Condition, fill = Condition)) +
+  stat_summary(fun.data = "mean_cl_normal") + 
+  scale_x_continuous(breaks=seq(0, 180, 30)) +
+  geom_textline(
+    data = predicted_data,
+    aes(x = Orifilter, y = .epred, group= Condition, label = Condition),
+    inherit.aes = FALSE,
+    size = 5.2, vjust = 0.2, hjust = 0.97,
+    size = 1,
+    colour = "grey20",
+    show.legend = FALSE
+  ) +
+  geom_ribbon(
+    data = predicted_data,
+    aes(
+      x = Orifilter,
+      ymin = .lower,
+      ymax = .upper,
+      fill = Condition),
+    inherit.aes = FALSE,
+    alpha = 0.1) +
+  labs(x = "Orientation filter (degree)", y = "Effect \n (diff. with the Up/Pos cond.)") + 
+  ggtitle("Effects (dots) \n model predictions (line and colored ribbons)") +
+  lntheme +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(legend.position = "none")+
+  theme(axis.ticks.x = element_blank())
+print(SuperposedPlotModel)
+
+name <- paste("SuperposedPlotModel.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+SuperposedPlotModel
+dev.off()
+
+
+
+
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(model, resp = "difference", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("Effect") +
+  ylab("Density")
+print(checkModel)
+
+
+```
+
+## Model summary and diagnositcs
+Checking to see if our model is good : A good model means that the chains (MCMC) converged. A small Rhat (smaller than 1.1) indicates small variance between each chain hence, a good convergence.
+A big effective sample size (ESS) The ESS corresponds to the number of independent samples with the same estimation power as the N autocorrelated samples. It is is a measure of “how much independent information there is in autocorrelated chains” (Kruschke 2015, p182-3).
+
+```{r Model Diagnostic, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center",  fig.height= 10, fig.width= 50}
+
+print(summary(model))
+
+
+print("The highest Rhat values -- Should be under 1.01")
+print(tail(sort(rstan::summary(model$fit)$summary[,"Rhat"]))) #here biggest rhat
+print("The smallest Effective Sample Size -- should be over 100 * the number of chains")
+print(head(sort(rstan::summary(model$fit)$summary[,"n_eff"]))) # the smallest ESS
+
+
+pars <- variables(model)
+pars_sel <- c(sample(pars[1:20], 20), sample(pars[-(1:20)], 20))
+plot(model, pars = pars_sel, N = 9, 
+     ask = FALSE, exact_match = TRUE, newpage = TRUE, plot = TRUE)
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(model, resp = "difference", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("difference") +
+  ylab("Density")
+print(checkModel)
+
+```
+
+## Credible Invervals 
+If the credible intervals of two conditions do not overlap, then the difference between the two conditions is considered significant.
+```{r CrI, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+
+#get_variables(model)
+postsamp <- posterior_samples(model, pars = "^b_")
+names(postsamp) <- c('Peakloc_Inv', 'Peakloc_Neg', 'StDev_Inv', 'StDev_Neg', 'BaseAmp_Inv', 'BaseAmp_Neg', 'PeakAmp_Inv', 'PeakAmp_Neg')
+
+postsamp <- postsamp %>%
+  mutate(Peakloc_Neg = Peakloc_Inv + Peakloc_Neg,
+         StDev_Neg= StDev_Inv + StDev_Neg,
+         BaseAmp_Neg = BaseAmp_Inv + BaseAmp_Neg,
+          PeakAmp_Neg = PeakAmp_Inv + PeakAmp_Neg )
+med <- apply(postsamp,2,median)
+
+
+credint_postsamp89 <- ci(ci = 0.89, postsamp, method="HDI")
+
+med <- as.data.frame(med)
+med <- med %>% tibble::rownames_to_column()
+mean <- as.data.frame(colMeans(postsamp)) %>% tibble::rownames_to_column()
+TableMeanMedCrI = left_join(credint_postsamp89, med, by = join_by("Parameter" == "rowname"))
+TableMeanMedCrI = left_join(TableMeanMedCrI, mean, by = join_by("Parameter" == "rowname"))
+TableMeanMedCrI <- TableMeanMedCrI %>% mutate(across(where(is.numeric), ~ round(., 2)))
+
+write_xlsx(TableMeanMedCrI, 'paperTable.xlsx') #, 'C:/Thèse/ProjetInversionNegation/Paper')
+ 
+credintETI_postsamp <- ci(postsamp, method="ETI")
+
+credint_postsamp89[c('Parameter', 'Condition')] <- str_split_fixed(credint_postsamp89$Parameter, '_', 2)
+
+credint_postsamp89L <- credint_postsamp89%>%
+  dplyr::select(Parameter, CI_low, Condition)%>%
+  dplyr::rename("CrI" = "CI_low") %>%
+  dplyr::mutate(lh = 'L')
+credint_postsamp89H <- credint_postsamp89%>%
+  dplyr::select(Parameter, CI_high, Condition)%>%
+  dplyr::rename("CrI" = "CI_high")%>%
+  dplyr::mutate(lh = 'H')
+    
+CI <- rbind(credint_postsamp89L, credint_postsamp89H)
+
+CI <- CI %>%  mutate(Effect = ifelse(Condition == "Inv", 2, 1))
+
+##### Standard Deviation
+GraphStD <- CI %>%
+  filter(Parameter == "StDev") %>%
+  ggplot(aes(x = Effect, y= CrI, group = Condition, color = Condition, label=Condition))+
+  geom_point(shape = 4, size = 4, stroke = 2)+
+  ggtitle("StDev CrI") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette) +
+  xlim(0,16) +
+  scale_y_continuous(limits = c(23, 57), breaks = c(30, 40, 50)) +
+  geom_textline(size = 9, vjust = 0.2, hjust = 0.5, alpha = 0.8,
+                linewidth = 1.8, linetype = 1) +
+  lntheme+
+  theme(legend.position = "none",
+        axis.text.x=element_blank(),
+      axis.ticks.x=element_blank())
+
+GraphStD
+
+name <- paste("GraphStD.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+GraphStD
+dev.off()
+
+
+####Base Amplitude
+GraphBA <- CI %>%
+  filter(Parameter == "BaseAmp") %>%
+  ggplot(aes(x = Effect, y= CrI, group = Condition, color = Condition, label=Condition))+
+  geom_point(shape = 4, size = 4, stroke = 2)+
+  ggtitle("BaseAmp CrI") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette) +
+  xlim(0,16) +
+  scale_y_continuous(limits = c(0.2,1.5), breaks = c(0.4,0.6, 0.8, 1, 1.2, 1.4)) +
+  geom_textline(size = 9, vjust = 0.2, hjust = 0.5, alpha = 0.8,
+                linewidth = 1.8, linetype = 1) +
+  lntheme +
+  theme(legend.position = "none",
+        axis.text.x=element_blank(),
+      axis.ticks.x=element_blank())
+GraphBA
+name <- paste("GraphBA.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+GraphBA
+dev.off()
+
+####Peak Amplitude
+GraphPA <- CI %>%
+  filter(Parameter == "PeakAmp") %>%
+  ggplot(aes(x = Effect, y= CrI, group = Condition, color = Condition, label=Condition))+
+  geom_point(shape = 4, size = 4, stroke = 2)+
+  ggtitle("PeakAmp CrI") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette) +
+  xlim(0,16) +
+  scale_y_continuous(limits = c(0.5,1.5), breaks = c(0.6, 0.8, 1, 1.2, 1.4)) +
+  geom_textline(size = 9, vjust = 0.2, hjust = 0.5, alpha = 0.8,
+                linewidth = 1.8, linetype = 1) +
+  lntheme +
+  theme(legend.position = "none",
+        axis.text.x=element_blank(),
+      axis.ticks.x=element_blank())
+GraphPA
+name <- paste("GraphPA.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+GraphPA
+dev.off()
+
+
+####Peak Location
+GraphPL <- CI %>%
+  filter(Parameter == "Peakloc") %>%
+  ggplot(aes(x = Effect, y= CrI, group = Condition, color = Condition, label=Condition))+
+  geom_point(shape = 4, size = 4, stroke = 2)+
+  ggtitle("PeakLoc CrI") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette) +
+  xlim(0,16) +
+  scale_y_continuous(limits = c(77, 100), breaks = c(80, 90, 100)) +
+  geom_textline(size = 9, vjust = 0.2, hjust = 0.5, alpha = 0.8,
+                linewidth = 1.8, linetype = 1) +
+  lntheme +
+  theme(legend.position = "none",
+        axis.text.x=element_blank(),
+      axis.ticks.x=element_blank())
+GraphPL
+name <- paste("GraphPL.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+GraphPL
+dev.off()
+```
+
+\newpage
+
+## Individual Parameters estimation
+For each of the 4 Gaussian parameters we take the individual level model estimates.
+We use it to the the difference of the parameters estimates for each subjects between the inversion and the contrast negation effect.
+
+
+
+```{r Individual estimates, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+sumcoefs <- coef(model)$Subjects %>% as.data.frame() %>% 
+  rownames_to_column(var = "Subjects") 
+
+
+peakLoc <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.PeakLoc"), starts_with("Est.Error.PeakLoc")) 
+colnames(peakLoc) <- gsub("Estimate.PeakLoc_","",colnames(peakLoc))
+peakLoc %<>% 
+  dplyr::rename(inv = Intercept,
+               inverror = Est.Error.PeakLoc_Intercept,
+               negerror = Est.Error.PeakLoc_Conditionneg) %>% 
+  mutate(neg = inv + Conditionneg) %>% 
+  melt(id.vars = "Subjects") %>%
+  filter(!variable == 'Conditionneg')
+
+stDev <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.StDev"), starts_with("Est.Error.StDev")) 
+colnames(stDev) <- gsub("Estimate.StDev_","",colnames(stDev))
+stDev %<>% 
+  dplyr::rename(inv = Intercept,
+                inverror = Est.Error.StDev_Intercept,
+               negerror = Est.Error.StDev_Conditionneg) %>% 
+  mutate(neg = inv + Conditionneg) %>% 
+  melt(id.vars = "Subjects") %>%
+  filter(!variable == 'Conditionneg')
+
+peakAmpl <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.PeakAmpl"), starts_with("Est.Error.PeakAmpl"))
+colnames(peakAmpl) <- gsub("Estimate.PeakAmpl_","",colnames(peakAmpl))
+peakAmpl %<>% 
+  dplyr::rename(inv = Intercept,
+                inverror = Est.Error.PeakAmpl_Intercept,
+               negerror = Est.Error.PeakAmpl_Conditionneg) %>% 
+  mutate(neg = inv + Conditionneg) %>% 
+  melt(id.vars = "Subjects") %>%
+  filter(!variable == 'Conditionneg')
+
+baseAmpl <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.BaseAmpl"), starts_with("Est.Error.BaseAmpl"))
+colnames(baseAmpl) <- gsub("Estimate.BaseAmpl_","",colnames(baseAmpl))
+baseAmpl %<>% 
+  dplyr::rename(inv = Intercept,
+                inverror = Est.Error.BaseAmpl_Intercept,
+               negerror = Est.Error.BaseAmpl_Conditionneg) %>% 
+  mutate(neg = inv + Conditionneg) %>% 
+  melt(id.vars = "Subjects") %>%
+  filter(!variable == 'Conditionneg')
+
+
+
+# Plot individual parameters
+PL <- peakLoc %>% 
+  filter(variable== "inv"| variable== "neg") %>%
+  ggplot(aes(x = as.factor(variable), y = value)) + 
+  geom_boxplot() +
+  geom_point(aes(group = Subjects, color = Subjects)) +
+  geom_line(aes(group = Subjects, color = Subjects)) +
+  labs(x = "Effect", y = "Peak Location") +
+  ggtitle("Peak Location \n individual estimates")+
+  lntheme+
+  theme(legend.position = "none")
+PL
+
+name <- paste("GraphIndPL.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PL
+dev.off()
+
+SD <- stDev %>% 
+  filter(variable== "inv"| variable== "neg") %>%
+  ggplot(aes(x = as.factor(variable), y = value)) + 
+  geom_boxplot() +
+  geom_point(aes(group = Subjects, color = Subjects)) +
+  geom_line(aes(group = Subjects, color = Subjects)) +
+  labs(x = "Effect", y = "Standard Deviation") +
+  ggtitle("Standart Deviation \n individual estimates")+
+  lntheme+
+  theme(legend.position = "none")
+SD
+name <- paste("GraphIndSD.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+SD
+dev.off()
+
+PA <- peakAmpl %>% 
+  filter(variable== "inv"| variable== "neg") %>%
+  ggplot(aes(x = as.factor(variable), y = value)) + 
+  geom_boxplot() +
+  geom_point(aes(group = Subjects, color = Subjects)) +
+  geom_line(aes(group = Subjects, color = Subjects)) +
+  labs(x = "Effect", y = "Peak Amplitude") +
+  ggtitle("Peak Amplitude \n individual estimates")+
+  lntheme+
+  theme(legend.position = "none")
+PA
+name <- paste("GraphIndPA.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PA
+dev.off()
+
+BA <- baseAmpl %>% 
+  filter(variable== "inv"| variable== "neg") %>%
+  ggplot(aes(x = as.factor(variable), y = value)) + 
+  geom_boxplot() +
+  geom_point(aes(group = Subjects, color = Subjects)) +
+  geom_line(aes(group = Subjects, color = Subjects)) +
+  labs(x = "Effect", y = "Base Amplitude") +
+  ggtitle("Base Amplitude \n individual estimates")+
+  lntheme+
+  theme(legend.position = "none")
+BA
+name <- paste("GraphIndBA.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+BA
+dev.off()
+```
+
+## Comparison of inversion and contrast negation effect based on individual parameters estimates
+
+Here we represent each individual parameter estimate as a dot on a graph with the inversion effect in abscisse and the contrast negation effect in y.
+
+The comparison is also done through a correlation between the parameter estimates of the inversion effect and the contrast negation effect.
+
+```{r Comparison, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+peakLoc1 <- peakLoc %>%
+     tidyr::pivot_wider(names_from=variable,values_from = value)
+
+Peakloc_InvNeg <-  peakLoc1 %>%
+  ggplot() + 
+  ggtitle("Comparison of estimates for Peak Location") +
+  labs(x = "Inversion effect", y = "Negation effect") +
+  geom_dotplot(aes(x = inv, y = neg, group = Subjects), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_linerange(aes(xmin = inv - inverror, xmax = inv + inverror, y = neg), color = "#56B4E9") +
+  geom_errorbar(aes(ymin= neg - negerror, ymax= neg + negerror, x = inv), color = "#E69F00")+
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(50, 130), breaks = c(60, 90, 120)) +
+  scale_x_continuous(limits = c(50, 130), breaks = c(60, 90, 120)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+print(Peakloc_InvNeg)
+name <- paste("Peakloc_InvNeg.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+Peakloc_InvNeg
+dev.off()
+
+
+corpeakloc <- cor.test(peakLoc1$inv, peakLoc1$neg, method="pearson")
+print("The correlation coefficient for peak location is : ")
+print(corpeakloc )
+
+
+
+#######Standart deviation
+stDev1 <- stDev %>%
+     tidyr::pivot_wider(names_from=variable,values_from = value)
+
+stDev_InvNeg <-  stDev1 %>%
+  ggplot() + 
+  ggtitle("Comparison estimates for Standart Deviation") +
+  labs(x = "Inversion effect", y = "Negation effect") +
+  geom_dotplot(aes(x = inv, y = neg, group = Subjects), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_linerange(aes(xmin = inv - inverror, xmax = inv + inverror, y = neg), color = "#56B4E9") +
+  geom_errorbar(aes(ymin= neg - negerror, ymax= neg + negerror, x = inv), color = "#E69F00")+
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(0, 65), breaks = c(0, 30, 60)) +
+  scale_x_continuous(limits = c(0, 65), breaks = c(0, 30, 60)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+
+print(stDev_InvNeg)
+name <- paste("stDev_InvNeg.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+stDev_InvNeg
+dev.off()
+
+
+corstandev <- cor.test(stDev1$inv, stDev1$neg, method="pearson")
+print("The correlation coefficient for standart deviation is : ")
+print(corstandev )
+
+
+###### Peak Amplitude
+peakAmpl1 <- peakAmpl %>%
+     tidyr::pivot_wider(names_from=variable,values_from = value)
+
+peakAmpl_InvNeg <-  peakAmpl1 %>%
+  ggplot() + 
+  ggtitle("Comparison estimates for Peak Amplitude") +
+  labs(x = "Inversion effect", y = "Negation effect") +
+  geom_dotplot(aes(x = inv, y = neg, group = Subjects), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_linerange(aes(xmin = inv - inverror, xmax = inv + inverror, y = neg), color = "#56B4E9") +
+  geom_errorbar(aes(ymin= neg - negerror, ymax= neg + negerror, x = inv), color = "#E69F00")+
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(-0.45,2.3), breaks = c(0, 0.5, 1, 1.5, 2)) +
+  scale_x_continuous(limits = c(-0.45,2.3), breaks = c(0, 0.5, 1, 1.5, 2)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+print(peakAmpl_InvNeg)
+name <- paste("peakAmpl_InvNeg.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+peakAmpl_InvNeg
+dev.off()
+
+corpeakamp <- cor.test(peakAmpl1$inv, peakAmpl1$neg, method="pearson")
+print("The correlation coefficient for peak amplitude is : ")
+print(corpeakamp )
+
+
+###### Base Aplitude
+baseAmpl1 <- baseAmpl %>%
+     tidyr::pivot_wider(names_from=variable,values_from = value)
+
+baseAmpl_InvNeg <-  baseAmpl1 %>%
+  ggplot() + 
+  ggtitle("Comparison estimates for Base Amplitude") +
+  labs(x = "Inversion effect", y = "Negation effect") +
+  geom_dotplot(aes(x = inv, y = neg, group = Subjects), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_linerange(aes(xmin = inv - inverror, xmax = inv + inverror, y = neg), color = "#56B4E9") +
+  geom_errorbar(aes(ymin= neg - negerror, ymax= neg + negerror, x = inv), color = "#E69F00")+
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(-0.45,2.3), breaks = c(0, 0.5, 1, 1.5, 2)) +
+  scale_x_continuous(limits = c(-0.45,2.3), breaks = c(0, 0.5, 1, 1.5, 2)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+print(baseAmpl_InvNeg)
+name <- paste("baseAmpl_InvNeg.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+baseAmpl_InvNeg
+dev.off()
+
+corbasamp <- cor.test(baseAmpl1$inv, baseAmpl1$neg, method="pearson")
+print("The correlation coefficient for base amplitude is : ")
+print(corbasamp )
+
+
+```
+
+
+\newpage
+## Full Spectrum analysis
+For the main analysis we do not take into account the results for non filtered images. 
+The accuracy and dprime for full spectrum analysis is reported in the Supplementary, as well as the effects of inversion and negation for full spectrum images.
+
+```{r fs, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+FsData <- DataTot %>%
+  dplyr::select(Sujet, Accu, Condition, Filter, Answer)
+FsData <- FsData %>% filter(Filter == 'fs')
+
+FsMean <- FsData %>%
+  dplyr::group_by(Condition, Filter, Sujet)%>%
+  dplyr::summarise(meanpersuj = mean(Accu)) #calculate the accuracy for each subject
+
+fs <- FsMean %>% 
+  ggplot(aes(x = as.factor(Condition), y = meanpersuj)) + 
+  geom_boxplot() +
+  geom_point(aes(group = Sujet, color = Sujet)) +
+  geom_line(aes(group = Sujet, color = Sujet)) +
+  labs(x = "Condition", y = "Mean Accuracy") +
+  ggtitle("Individual mean accuracy per orientation-filter")+
+  lntheme+
+  theme(legend.position = "none")
+fs
+
+
+
+FsData <- FsData %>%
+  mutate(Hit = ifelse((Answer == "same" & Accu == 1), 1, 0),      #subject responded same and was right --> hit
+         FalseA = ifelse((Answer == "same" & Accu == 0), 1, 0),   #subj responded same and was wrong --> false alarm
+         CorR = ifelse((Answer == "diff" & Accu == 1), 1, 0),     #subj responded diff and was right --> CR
+         Miss = ifelse((Answer == "diff" & Accu == 0), 1, 0))     #subj responded diff and was wrong --> miss
+
+
+Fsdprime <- FsData %>% #Pos condition For every subject and every filter, the hit rate and the fa rate
+  dplyr::group_by(Sujet, Condition, Filter) %>%
+  dplyr::summarise( H = sum(Hit) + 0.5,
+                    FA = sum(FalseA) + 0.5,
+                    CR = sum(CorR) + 0.5,
+                    M = sum(Miss) + 0.5) %>%
+  ungroup() #calculate hits, false alarmas with the correction
+
+
+Fsdprime$HR <- Fsdprime$H / (Fsdprime$H + Fsdprime$M)
+Fsdprime$FAR <- Fsdprime$FA / (Fsdprime$FA + Fsdprime$CR)
+Fsdprime$dprime <- qnorm(Fsdprime$HR) - qnorm(Fsdprime$FAR) #calculate dprime
+
+
+fs.summary <- Fsdprime %>%
+  dplyr::group_by(Condition,Filter) %>%
+  dplyr::summarise( sd = sd(dprime),
+             meandp = mean(dprime)) #putin all the dprime of all participants together for each condition
+
+
+Zfs <- Fsdprime %>%
+  dplyr::summarise(mean = mean(dprime),
+                   sd = sd(dprime))
+
+Fsdprime$Zscore <- (Fsdprime$dprime - Zfs$mean)/ Zfs$sd #calculate the zscore to normalize it
+
+FigFsDp <- Fsdprime %>%
+  ggplot(aes(x = Condition, y = Zscore, group = Condition, fill = Condition, color = Condition, label=Condition)) +
+  stat_summary(fun.data = "mean_cl_normal") +
+  ggtitle("Normalized sensitivity at each filter") +
+  labs(x = "Orientation filter (degree)", y = "Performance (normd')") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  lntheme+
+  theme(legend.position = "none")
+print(FigFsDp)
+
+#dprime difference between pos and inv and pos and neg
+diff.fs <- Fsdprime %>%
+  dplyr::select(Sujet, Condition, Zscore)%>%
+  pivot_wider(names_from=Condition, values_from=c(Zscore))
+
+diff.fs$Negdiff <- diff.fs$pos - diff.fs$neg
+diff.fs$Invdiff <- diff.fs$pos - diff.fs$inv  
+
+diffFS <- diff.fs %>%
+  dplyr::select(Sujet, Negdiff, Invdiff) %>%
+  pivot_longer(c(Negdiff, Invdiff), names_to='Condition', values_to='dprime')
+
+
+FigFsEffect <- diffFS %>%
+  ggplot(aes(x = Condition, y = dprime, group = Condition, fill = Condition, color = Condition, label=Condition)) +
+  stat_summary(fun.data = "mean_cl_normal") +
+  ggtitle("Full spectrum inversion and negation effects") +
+  labs(x = "Condition", y = "Effect (normd' difference)") +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  lntheme+
+  theme(legend.position = "none")
+print(FigFsEffect)
+
+#Comparison of inversion and negation performance for FS images
+
+Correl_fs_InvNeg <-  diff.fs %>%
+  ggplot() + 
+  ggtitle("Performance for FS images with inversion and negation") +
+  labs(x = "Performance with inversion (normd')", y = "Performance with negation (normd')") +
+  geom_dotplot(aes(x = inv, y = neg, group = Sujet), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(-3, 3), breaks = c(-3, -2, -1, 0, 1, 2, 3)) +
+  scale_x_continuous(limits = c(-3, 3), breaks = c(-3, -2, -1, 0, 1, 2, 3)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+print(Correl_fs_InvNeg)
+name <- paste("Correl_fs_InvNeg.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+Correl_fs_InvNeg
+dev.off()
+
+#Comparison of inversion and negation effects for FS images
+
+Correl_fs_InvNegEff <-  diff.fs %>%
+  ggplot() + 
+  ggtitle("Effects comparison for FS images") +
+  labs(x = "Inversion effect", y = "Negation effect") +
+  geom_dotplot(aes(x = Invdiff, y = Negdiff, group = Sujet), binaxis='y', stackdir='center', colour = "black", fill = "black", dotsize = .5) +
+  geom_abline(intercept = 0, slope = 1) +
+  guides(linetype = FALSE) +
+  scale_y_continuous(limits = c(-2, 4), breaks = c(-2, -1, 0, 1, 2, 3, 4)) +
+  scale_x_continuous(limits = c(-2, 4), breaks = c(-2, -1, 0, 1, 2, 3, 4)) +
+  lntheme+
+  theme(aspect.ratio=1, #axis.text = element_text(size = 30),
+        panel.border = element_rect(colour = "black", fill=NA, size=3))
+print(Correl_fs_InvNegEff)
+name <- paste("Correl_fs_InvNegEff.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+Correl_fs_InvNegEff
+dev.off()
+
+#Correlations 
+corfsInvNegdp<- cor.test(diff.fs$inv, diff.fs$neg, method="pearson") #normd' corrlation
+print(paste("Correlation for FS images between the performance in inversion and negation" , corfsInvNegdp))
+corfsInvNegDiff<- cor.test(diff.fs$Negdiff, diff.fs$Invdiff, method="pearson")#correlations between inversion and negation effect
+print(paste("Correlation for FS images between the effects of inversion and negation" , corfsInvNegDiff))
+```
+
+\newpage
+
+## General Linear Mixed Model 
+The same General Linear Mixed model used for orientaion-filtered images was run to compare the recognition performance of full spectrum images between the effects of inversion and negation.
+
+```{r GLM Bayes FS effects, echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE}
+
+fit <- brm(
+  formula = dprime ~ Condition + (Condition | Sujet),
+  data = diffFS,
+  family = student,
+  warmup = 2000,
+  iter = 6000,
+  cores = parallel::detectCores(),
+  chains = 4, 
+  control = list(adapt_delta = 0.9),
+  file = "glmFS1.rds",
+  seed = 986,
+  sample_prior = "yes"
+)
+
+
+stanplot(fit, 
+         type = "trace")
+stanplot(fit, 
+         type = "acf_bar")
+summary(fit)
+a <- stanplot(fit, 
+         exclude=c('sigma', 'nu'),
+         type = "areas",
+         prob = 0.95)
+
+diffFS %>% 
+  # data_grid(Condition) %>%
+  add_fitted_draws(fit) %>%
+  ggplot(aes(x = .value, y = Condition)) +#interaction(SEX, PPED))) +
+  stat_pointintervalh(.width = c(.68, .95)) +
+  coord_flip() +
+  xlab("predicted probability") 
+  #scale_x_continuous(breaks = seq(0, 0.24, 0.02))
+
+modelCond <- readRDS("glmFS1.rds")
+#posterior_summary(model)
+print("The highest Rhat values -- Should be under 1.01")
+print(tail(sort(rstan::summary(modelCond$fit)$summary[,"Rhat"]))) #here biggest rhat
+print("The smallest Effective Sample Size -- should be over 100 * the number of chains")
+print(head(sort(rstan::summary(modelCond$fit)$summary[,"n_eff"]))) # the smallest ESS
+
+
+
+summary(modelCond)
+pred_fit <- predict(fit, 
+                       summary = FALSE, 
+                       negative_rt = TRUE, 
+                       ndraws = 500)
+
+dfpred <- crossing(
+  Condition = c('Invdiff', 'Negdiff')
+)
+
+
+predicted_data <- add_epred_draws(modelCond, newdata = dfpred, re_formula = NA, scale = "response")
+
+predicted_dataINVfs <- predicted_data %>%
+  filter(Condition == 'Invdiff')
+ci_hdiINVfs <- ci(ci= 0.89, predicted_dataINVfs, method = "HDI")
+
+predicted_dataNEGfs <- predicted_data %>%
+  filter(Condition == 'Negdiff')
+ci_hdiNEGfs <- ci(ci= 0.89, predicted_dataNEGfs, method = "HDI")
+
+predicted_data <- predicted_data %>% 
+  mean_qi()
+
+predicted_data$Condition <- as.factor(predicted_data$Condition)
+
+
+PlotModel <- diffFS %>%
+  ggplot(aes(x = Condition, y = dprime, color = Condition, fill = Condition)) +
+  stat_summary(fun = "mean", geom = "point", shape = 25) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  ylim(-0.5,1.5)+
+  #stat_summary(fun.data = "mean_cl_normal", shape = 25) +
+  geom_point(data = predicted_data,
+    aes(
+      x = Condition,
+      y = .epred),
+    shape = 0,
+    size = 4) +#,
+      #fill = Condition)) +
+  geom_abline(intercept = c(ci_hdiINVfs$CI_low[5], ci_hdiINVfs$CI_high[5]), slope = 0, linetype= 4, size = 1, color = palette[1]) +
+  geom_abline(intercept = c(ci_hdiNEGfs$CI_low[5], ci_hdiNEGfs$CI_high[5]), slope = 0, linetype= 4, size = 1, color = palette[2]) +
+  labs(x = "Conditions", y = "Effect (normd'difference)") + 
+  ggtitle("Mean and CrI estimates for each effect") +
+  lntheme +
+  scale_fill_manual(values=palette) +
+  scale_color_manual(values=palette)+
+  theme(legend.position = "none")+
+  theme(axis.ticks.x = element_blank())
+print(PlotModel)
+
+
+name <- paste("GLModelfs.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PlotModel
+dev.off()
+
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(modelCond, resp = "Zscore", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("Effect") +
+  ylab("Density")
+print(checkModel)
+
+
+```
+
+\newpage
+##Upright-positive condition  
+Because we use the upright-positive condition and a control condition, and we use the performance in this condition to calculate the effects of inversion and negation, we wanted to test whether the recognition performance in this upright-positive condition influenced the stricking similarities between the effects of inversion and negation.
+
+## Gaussian Bayesian non linear mixed modeling
+Because the similarities were found at the level of the model parameter estimates of the effects of inversion and negation, we decided to model the normd'of the upright-positive condition using the same model.
+
+```{r Model Setup up pos, echo= TRUE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+PosDp <- Ztr %>%
+  dplyr::filter(Condition == 'pos') %>%
+  dplyr::select(Sujet, Filter, Zscore) %>%
+  dplyr::rename(Subjects = Sujet,
+         Orifilter = Filter,
+         Dp = Zscore) %>%
+  dplyr::mutate(Orifilter = as.numeric(Orifilter))
+
+
+
+formula <- brmsformula(
+  
+#gaussian model y ~ (1/(StDev * sqrt(2*pi))) * exp(- (x - mu)^2 / (2 * StDev ^2))
+# with y : the difference and x: the orientation filter, mu:the mean centered on the peaklocation
+  Dp ~ BaseAmpl + PeakAmpl * exp(-(Orifilter - PeakLoc)^2 / (2 * StDev^2)),
+  
+  #All 4 parameters : BaseAmpl , PeakAmpl, PeakLoc, StDev
+  #VD ~ 1 + effet(s) fixe(s) + (XX | XX)
+  # Peak location parameter (PeakLoc)
+  PeakLoc ~  1 + ( 1 | Subjects ), 
+  
+  # Standard Deviation parameter (StDev)
+  StDev ~  1 + ( 1 | Subjects),
+  
+  # Base amplitude parameter (baseAmpl)
+  BaseAmpl ~  1 + ( 1 | Subjects),
+  
+  # Peak amplitude parameter (peakAmpl)
+  PeakAmpl ~  1 + ( 1 | Subjects),
+  
+  # non-linear model = TRUE
+  nl = TRUE
+)
+
+
+
+
+# Priors
+ priors <- c(
+  # peak location:
+  prior(normal(80, 30), class = "b", nlpar = "PeakLoc", coef = "Intercept"), #90,40
+  #for the intercept we can set an informative prior / or set it on the center 
+  # 0-180 the middle is 90
+  #prior(normal(0, 20), nlpar = "PeakLoc", class = "b"),
+  # even if we expect a difference we set the difference to 0 +/- 5
+  #to not influence the model
+  prior(exponential(0.1), nlpar = "PeakLoc", class = "sd"), 
+  #we chose exp because it is always positive
+  
+  # StDev:
+  prior(normal(50, 20), class = "b", nlpar = "StDev", coef = "Intercept"), #40,20
+  #prior(normal(0, 30), nlpar = "StDev", class = "b"), #0,20/ 0,30
+  prior(exponential(0.1), nlpar = "StDev", class = "sd"),
+  
+  
+  # base amplitude:
+  prior(normal(2 , 1), class = "b", nlpar = "BaseAmpl", coef = "Intercept"), # -0.5, 1
+ # prior(normal(0, 1.5), nlpar = "BaseAmpl", class = "b"), #0, 1
+  prior(exponential(0.05), nlpar = "BaseAmpl", class = "sd"),
+
+  
+  # peak amplitude:
+  prior(normal(1, 1), class = "b", nlpar = "PeakAmpl", coef = "Intercept"), #1,2
+ # prior(normal(0, 1.5), nlpar = "PeakAmpl", class = "b"), #0,1/#0,2
+  prior(exponential(0.1), nlpar = "PeakAmpl", class = "sd"),
+  
+  # sigma parameter of the Gaussian model 
+  # (accounts for the variability of the residuals)
+  prior(exponential(0.1), class = "sigma") 
+)
+
+
+
+# Fitting
+
+fit <- brm(
+  formula = formula,
+  data = PosDp,
+  family = gaussian("identity"),
+  prior = priors,
+  warmup = 3000, #1000
+  iter = 6000, #4000
+  cores = parallel::detectCores(),
+  chains = 4, #2
+  control = list(adapt_delta = 0.9),
+  file = "posDP14.rds",
+  seed = 986,
+  sample_prior = "yes"  #permet de REGARDER
+)
+```
+
+## Uptight-positive check of bayesian modeling
+```{r Model Summary pos, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+modelPos <- readRDS("posDP14.rds") #8  10
+#posterior_summary(model)
+
+pred_fit <- predict(fit, 
+                       summary = FALSE, 
+                       negative_rt = TRUE, 
+                       ndraws = 500)
+
+dfpred <- crossing(
+  Orifilter = seq(from = 0, to = 180, length.out = 1e2))
+
+
+predicted_data <- add_epred_draws(modelPos, newdata = dfpred, re_formula = NA, scale = "response")
+
+gausci_hdi <- ci(predicted_data, method = "HDI")
+
+predicted_data <- predicted_data %>% 
+  mean_qi(.width = .89)
+
+
+PlotModelpos <- PosDp %>%
+  mutate(Orifilter = as.numeric(Orifilter)) %>%
+  ggplot(aes(x = Orifilter, y = Dp)) +
+  stat_summary(fun.data = "mean_cl_normal") + #this function displays the 95% CI
+  scale_x_continuous(breaks=seq(0, 240, 30)) +
+  geom_textline(
+    data = predicted_data,
+    aes(x = Orifilter, y = .epred, label = 'pos'),
+    inherit.aes = FALSE,
+    size = 5.2, vjust = 0.2, hjust = 0.97,
+    size = 1,
+    colour = "grey20",
+    show.legend = FALSE
+  ) +
+  geom_ribbon(
+    data = predicted_data,
+    aes(
+      x = Orifilter,
+      ymin = .lower,
+      ymax = .upper),
+    inherit.aes = FALSE,
+    alpha = 0.1) +
+  labs(x = "Orientation filter (degree)", y = "Performance (normd')") + 
+  ggtitle("Dprime (dots) \n model predictions (line and ribbons)") +
+  lntheme +
+  #scale_fill_manual(values=palette[2]) +
+  #scale_color_manual(values=palette[])+
+  theme(legend.position = "none")+
+  theme(axis.ticks.x = element_blank())+
+  xlim(0, 360)
+print(PlotModelpos)
+
+name <- paste("PlotModelpos.tif")
+tiff(name, width = 6000, height = 4000, units = 'px', res = 600)
+PlotModelpos
+dev.off()
+
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(modelPos, resp = "difference", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("difference") +
+  ylab("Density")
+print(checkModel)
+
+
+```
+
+## Upright-positive model diagnostic
+
+```{r fsModel Diagnostic, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center",  fig.height= 10, fig.width= 50}
+
+print(summary(modelPos))
+
+
+print("The highest Rhat values -- Should be under 1.01")
+print(tail(sort(rstan::summary(modelPos$fit)$summary[,"Rhat"]))) #here biggest rhat
+print("The smallest Effective Sample Size -- should be over 100 * the number of chains")
+print(head(sort(rstan::summary(modelPos$fit)$summary[,"n_eff"]))) # the smallest ESS
+
+
+pars <- variables(modelPos)
+pars_sel <- c(sample(pars[1:20], 20), sample(pars[-(1:20)], 20))
+plot(modelPos, pars = pars_sel, N = 9, 
+     ask = FALSE, exact_match = TRUE, newpage = TRUE, plot = TRUE)
+
+bayesplot::color_scheme_set("blue")
+checkModel <- pp_check(modelPos, resp = "difference", ndraws = 1e2) +
+  # theme(legend.position = "none") +
+  xlab("Performance (normd')") +
+  ylab("Density")
+print(checkModel)
+
+```
+
+
+
+
+```{r Individual estimatespos, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+# here we get the individual parameter estimates and prepare them in separate tables for each parameter to then run partial correlations with the parameter estimates of the inversion and negation effects
+
+sumcoefs <- coef(modelPos)$Subjects %>% as.data.frame() %>% 
+  rownames_to_column(var = "Subjects") 
+
+peakL_upright = mean(sumcoefs$Estimate.PeakLoc_Intercept)
+deviaS_upright = mean(sumcoefs$Estimate.StDev_Intercept)
+
+
+peakLocpos <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.PeakLoc"), starts_with("Est.Error.PeakLoc")) 
+colnames(peakLocpos) <- gsub("Estimate.PeakLoc_","",colnames(peakLocpos))
+peakLocpos %<>% 
+  dplyr::rename(PLpos = Intercept,
+               SDerror = Est.Error.PeakLoc_Intercept) 
+
+
+stDevpos <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.StDev"), starts_with("Est.Error.StDev")) 
+colnames(stDevpos) <- gsub("Estimate.StDev_","",colnames(stDevpos))
+stDevpos %<>% 
+  dplyr::rename(SDpos = Intercept,
+                SDerror = Est.Error.StDev_Intercept) 
+
+peakAmplpos <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.PeakAmpl"), starts_with("Est.Error.PeakAmpl"))
+colnames(peakAmplpos) <- gsub("Estimate.PeakAmpl_","",colnames(peakAmplpos))
+peakAmplpos %<>% 
+  dplyr::rename(PApos = Intercept,
+                PAerror = Est.Error.PeakAmpl_Intercept)
+
+baseAmplpos <- sumcoefs %>% dplyr::select(Subjects, starts_with("Estimate.BaseAmpl"), starts_with("Est.Error.BaseAmpl"))
+colnames(baseAmplpos) <- gsub("Estimate.BaseAmpl_","",colnames(baseAmplpos))
+baseAmplpos %<>% 
+  dplyr::rename(BApos = Intercept,
+                BAerror = Est.Error.BaseAmpl_Intercept) 
+```
+
+
+## Partial correlations between the parameter estimates of the effects of inversion and negation controlling for the influence of the upright-positive condition.
+
+
+```{r correl Individual estimatespos, echo= FALSE, eval=TRUE,  message = FALSE, warning = FALSE, fig.align="center"}
+
+PeakLocAll <- cbind(peakLocpos, peakLoc1)
+PeakLocAll <- PeakLocAll %>%
+  dplyr::select(PLpos, inv, neg)
+PCorPeakLocAll <- pcor(PeakLocAll) #calculate partial correlations
+
+StDevAll <- cbind(stDevpos, stDev1)
+StDevAll <- StDevAll %>%
+  dplyr::select(SDpos, inv, neg)
+PCorStDevAllAll <- pcor(StDevAll) #calculate partial correlations
+
+PeakAmpAll <- cbind(peakAmplpos, peakAmpl1)
+PeakAmpAll <- PeakAmpAll %>%
+  dplyr::select(PApos, inv, neg)
+pcor(PeakAmpAll) #calculate partial correlations
+
+BaseAmpAll <- cbind(baseAmplpos, baseAmpl1)
+BaseAmpAll <- BaseAmpAll %>%
+  dplyr::select(BApos, inv, neg)
+pcor(BaseAmpAll) #calculate partial correlations
+
+
+corPosInv<- cor.test(BaseAmpAll$BApos, BaseAmpAll$inv, method="pearson")
+print(corPosInv) #look at the correlation between the par esti of upright-pos and inversion
+corPosNeg<- cor.test(BaseAmpAll$BApos, BaseAmpAll$neg, method="pearson")
+print(corPosNeg) #look at the correlation between the par esti of upright-pos and inversion
+
+PartialCorrelParam <- data.frame(ParameterEstimate=character(),
+                           Cor=numeric(),
+                           Pvalue=numeric(), 
+                          CI_low=numeric(),
+                          CI_High=numeric())
+
+
+
+pcor_ci.test <- #I use this code I found to get the confidence interval of the correlations
+function (x, y, z, method = c("pearson", "kendall", "spearman"), conf.level = 0.95, ...) {
+    d1 <- deparse(substitute(x))
+    d2 <- deparse(substitute(y))
+    d3 <- deparse(substitute(z))
+    data.name <- paste0(d1, " and ", d2, "; controlling: ", d3)
+    method <- match.arg(method)
+    Method <- paste0("Partial correlation (", method, ")")
+    alternative <- "true partial correlation is not equal to 0"
+
+    x <- as.vector(x)
+    y <- as.vector(y)
+    z <- as.data.frame(z)
+    xyz <- data.frame(x, y, z)
+    pcor <- ppcor::pcor(xyz, method = method)
+    estimate <- pcor$est[1, 2]
+    p.value <- pcor$p.value[1, 2]
+    parameter <- c(n = pcor$n, gp = pcor$gp)
+    statistic <- c(Stat = pcor$statistic[1, 2])
+
+    fit1 <- lm(x ~ z, data = xyz)
+    fit2 <- lm(y ~ z, data = xyz)
+    cortest <- cor.test(resid(fit1), resid(fit2), method = method, conf.level = conf.level, ...)
+    ci <- cortest$conf.int
+
+    ht <- list(
+        statistic = statistic,
+        parameter = parameter,
+        p.value = p.value,
+        estimate = c(partial.cor = estimate),
+        alternative = alternative,
+        method = Method,
+        data.name = data.name,
+        conf.int = ci
+    )
+    class(ht) <- "htest"
+    ht
+}
+
+
+
+
+#Base amplitude
+invpc <- BaseAmpAll$inv
+negpc <- BaseAmpAll$neg
+pospc <- BaseAmpAll$BApos
+PCorBaseAmp<-pcor_ci.test(invpc, negpc, pospc)
+a <- c("Base Amplitude", as.numeric(PCorBaseAmp[[4]]), as.numeric(PCorBaseAmp[[3]]), as.numeric(PCorBaseAmp[[8]][1]), as.numeric(PCorBaseAmp[[8]][2]))
+PartialCorrelParam [nrow(PartialCorrelParam ) + 1,] <- a
+
+#Peak Amplitude
+invpc <- PeakAmpAll$inv
+negpc <- PeakAmpAll$neg
+pospc <- PeakAmpAll$PApos
+PCorPeakAmp<-pcor_ci.test(invpc, negpc, pospc)
+a <- c("Peak Aplitude", as.numeric(PCorPeakAmp[[4]]), as.numeric(PCorPeakAmp[[3]]), as.numeric(PCorPeakAmp[[8]][1]), as.numeric(PCorPeakAmp[[8]][2]))
+PartialCorrelParam [nrow(PartialCorrelParam ) + 1,] <- a
+
+#Standard Deviation
+invpc <- StDevAll$inv
+negpc <- StDevAll$neg  
+pospc <- StDevAll$SDpos
+PCorStDev<-pcor_ci.test(invpc, negpc, pospc)
+a <- c("Standard Deviation", as.numeric(PCorStDev[[4]]), as.numeric(PCorStDev[[3]]), as.numeric(PCorStDev[[8]][1]), as.numeric(PCorStDev[[8]][2]))
+PartialCorrelParam [nrow(PartialCorrelParam ) + 1,] <- a
+
+#Peak Location
+invpc <- PeakLocAll$inv
+negpc <- PeakLocAll$neg
+pospc <- PeakLocAll$PLpos
+PCorPeakLoc<-pcor_ci.test(invpc, negpc, pospc)
+a <- c("Peak Location", as.numeric(PCorPeakLoc[[4]]), as.numeric(PCorPeakLoc[[3]]), as.numeric(PCorPeakLoc[[8]][1]), as.numeric(PCorPeakLoc[[8]][2]))
+PartialCorrelParam [nrow(PartialCorrelParam ) + 1,] <- a
+
+write_xlsx(PartialCorrelParam , 'Param_estimatesPartialCorrelations.xlsx')
+
+
+
+```
+
